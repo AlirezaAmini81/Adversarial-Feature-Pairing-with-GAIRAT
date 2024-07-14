@@ -29,11 +29,15 @@ parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverg
 parser.add_argument('--lr-max', default=0.1, type=float)
 parser.add_argument('--lr-one-drop', default=0.01, type=float)
 parser.add_argument('--lr-drop-epoch', default=100, type=int)
+
+parser.add_argument('--objective',  choices=['AT', 'GAIRAT', 'AFP', 'GAIRAT_AFP'], required=True)
+
 parser.add_argument('--Lambda',type=str, default='-1.0', help='parameter for GAIR')
 parser.add_argument('--Lambda_max',type=float, default=float('inf'), help='max Lambda')
 parser.add_argument('--Lambda_schedule', default='fixed', choices=['linear', 'piecewise', 'fixed'])
 parser.add_argument('--weight_assignment_function', default='Tanh', choices=['Discrete','Sigmoid','Tanh'])
 parser.add_argument('--begin_epoch', type=int, default=60, help='when to use GAIR')
+parser.add_argument('--alpha', type=float, default=0.01)
 args = parser.parse_args()
 
 # Training settings
@@ -65,6 +69,9 @@ if args.net == "preactresnet18":
 if args.net == "WRN":
     model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
     net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
+if args.net == "Madry":
+    model = Madry().cuda()
+    net = "Maddry"
 
 model = torch.nn.DataParallel(model)
 optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
@@ -136,17 +143,18 @@ def train(epoch, model, train_loader, optimizer, Lambda):
         optimizer.param_groups[0].update(lr=lr)
         optimizer.zero_grad()
         
-        logit = model(x_adv)
+        # logit = model(x_adv)
 
-        if (epoch + 1) >= args.begin_epoch:
-            Kappa = Kappa.cuda()
-            loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
-            # Calculate weight assignment according to geometry value
-            normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
-            loss = loss.mul(normalized_reweight).mean()
-        else:
-            loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-        
+        # if (epoch + 1) >= args.begin_epoch:
+        #     Kappa = Kappa.cuda()
+        #     loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
+        #     # Calculate weight assignment according to geometry value
+        #     normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
+        #     loss = loss.mul(normalized_reweight).mean()
+        # else:
+        #     loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
+
+        loss = calculate_loss(args, epoch, data, x_adv, target, Lambda)
         train_robust_loss += loss.item() * len(x_adv)
         
         loss.backward()
@@ -157,6 +165,30 @@ def train(epoch, model, train_loader, optimizer, Lambda):
     train_robust_loss = train_robust_loss / num_data
 
     return train_robust_loss, lr
+
+# Calculate Loss
+def calculate_loss(args, epoch, data, x_adv, target, Lambda):
+    logit, adv_feats = model(x_adv)
+
+    if args.objective == 'AT':
+        return nn.CrossEntropyLoss(reduce="mean")(logit, target)
+    elif args.objective == 'GAIRAT':
+        if (epoch + 1) >= args.begin_epoch:
+            Kappa = Kappa.cuda()
+            loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
+            # Calculate weight assignment according to geometry value
+            normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
+            return loss.mul(normalized_reweight).mean()
+        else:
+            return nn.CrossEntropyLoss(reduce="mean")(logit, target)
+    elif args.objective == 'AFP':
+        mse = nn.MSELoss(reduction="none")
+        _ , cln_feats = model(data)
+        pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
+        ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
+        return ce_loss + args.alpha * pairwise_loss
+
+    
 
 # Adjust lambda for weight assignment using epoch
 def adjust_Lambda(epoch):
