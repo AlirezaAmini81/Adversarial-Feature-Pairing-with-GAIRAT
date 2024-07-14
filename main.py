@@ -37,7 +37,8 @@ parser.add_argument('--Lambda_max',type=float, default=float('inf'), help='max L
 parser.add_argument('--Lambda_schedule', default='fixed', choices=['linear', 'piecewise', 'fixed'])
 parser.add_argument('--weight_assignment_function', default='Tanh', choices=['Discrete','Sigmoid','Tanh'])
 parser.add_argument('--begin_epoch', type=int, default=60, help='when to use GAIR')
-parser.add_argument('--alpha', type=float, default=0.01)
+
+parser.add_argument('--alpha', type=float, default=0.01, help='The coefficient of the feature pairwise loss')
 args = parser.parse_args()
 
 # Training settings
@@ -154,21 +155,22 @@ def train(epoch, model, train_loader, optimizer, Lambda):
         # else:
         #     loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
 
-        loss = calculate_loss(args, epoch, data, x_adv, target, Lambda)
+        loss = calculate_loss(args, epoch, data, x_adv, target, Lambda, Kappa)
         train_robust_loss += loss.item() * len(x_adv)
         
         loss.backward()
         optimizer.step()
         
         num_data += len(data)
+        print("llll")
 
     train_robust_loss = train_robust_loss / num_data
 
     return train_robust_loss, lr
 
 # Calculate Loss
-def calculate_loss(args, epoch, data, x_adv, target, Lambda):
-    logit, adv_feats = model(x_adv)
+def calculate_loss(args, epoch, data, x_adv, target, Lambda, Kappa):
+    adv_feats, logit = model(x_adv)
 
     if args.objective == 'AT':
         return nn.CrossEntropyLoss(reduce="mean")(logit, target)
@@ -183,12 +185,28 @@ def calculate_loss(args, epoch, data, x_adv, target, Lambda):
             return nn.CrossEntropyLoss(reduce="mean")(logit, target)
     elif args.objective == 'AFP':
         mse = nn.MSELoss(reduction="none")
-        _ , cln_feats = model(data)
+        cln_feats, _  = model(data)
         pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
         ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
         return ce_loss + args.alpha * pairwise_loss
+    elif args.objective == 'GAIRAT_AFP':
+        mse = nn.MSELoss(reduction="none")
+        cln_feats, _  = model(data)
 
-    
+        if (epoch + 1) >= args.begin_epoch:
+            Kappa = Kappa.cuda()
+            pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean(dim=1)
+            ce_loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
+            # print("ce loss", ce_loss.shape)
+            # print("pairwise loss", pairwise_loss.shape)
+            loss = ce_loss + args.alpha * pairwise_loss
+            # Calculate weight assignment according to geometry value
+            normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
+            return loss.mul(normalized_reweight).mean()
+        else:
+            pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
+            ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
+            return ce_loss + args.alpha * pairwise_loss
 
 # Adjust lambda for weight assignment using epoch
 def adjust_Lambda(epoch):
@@ -225,99 +243,104 @@ def adjust_Lambda(epoch):
                 Lambda = Lam
     return Lambda
 
-# Setup data loader
-transform_train = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-])
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-])
+if __name__ == '__main__':
 
-if args.dataset == "cifar10":
-    trainset = torchvision.datasets.CIFAR10(root='./data/cifar-10', train=True, download=True, transform=transform_train)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=2)
-    testset = torchvision.datasets.CIFAR10(root='./data/cifar-10', train=False, download=True, transform=transform_test)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=2)
-if args.dataset == "svhn":
-    trainset = torchvision.datasets.SVHN(root='./data/SVHN', split='train', download=True, transform=transform_train)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=2)
-    testset = torchvision.datasets.SVHN(root='./data/SVHN', split='test', download=True, transform=transform_test)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=2)
-if args.dataset == "mnist":
-    trainset = torchvision.datasets.MNIST(root='./data/MNIST', train=True, download=True, transform=transforms.ToTensor())
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=1,pin_memory=True)
-    testset = torchvision.datasets.MNIST(root='./data/MNIST', train=False, download=True, transform=transforms.ToTensor())
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=1,pin_memory=True)
+    # Setup data loader
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+    ])
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+    ])
 
-# Resume 
-title = 'GAIRAT'
-best_acc = 0
-start_epoch = 0
-if resume:
-    # Resume directly point to checkpoint.pth.tar
-    print ('==> GAIRAT Resuming from checkpoint ..')
-    print(resume)
-    assert os.path.isfile(resume)
-    out_dir = os.path.dirname(resume)
-    checkpoint = torch.load(resume)
-    start_epoch = checkpoint['epoch']
-    best_acc = checkpoint['test_pgd20_acc']
-    model.load_state_dict(checkpoint['state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title, resume=True)
-else:
-    print('==> GAIRAT')
-    logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title)
-    logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD20 Acc'])
+    if args.dataset == "cifar10":
+        trainset = torchvision.datasets.CIFAR10(root='./data/cifar-10', train=True, download=True, transform=transform_train)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=2)
+        testset = torchvision.datasets.CIFAR10(root='./data/cifar-10', train=False, download=True, transform=transform_test)
+        test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=2)
+    if args.dataset == "svhn":
+        trainset = torchvision.datasets.SVHN(root='./data/SVHN', split='train', download=True, transform=transform_train)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=2)
+        testset = torchvision.datasets.SVHN(root='./data/SVHN', split='test', download=True, transform=transform_test)
+        test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=2)
+    if args.dataset == "mnist":
+        trainset = torchvision.datasets.MNIST(root='./data/MNIST', train=True, download=True, transform=transforms.ToTensor())
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=1,pin_memory=True)
+        testset = torchvision.datasets.MNIST(root='./data/MNIST', train=False, download=True, transform=transforms.ToTensor())
+        test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=1,pin_memory=True)
 
-## Training get started
-test_nat_acc = 0
-test_pgd20_acc = 0
+    print(len(train_loader))
+    # Resume 
+    title = 'GAIRAT'
+    best_acc = 0
+    start_epoch = 0
+    if resume:
+        # Resume directly point to checkpoint.pth.tar
+        print ('==> GAIRAT Resuming from checkpoint ..')
+        print(resume)
+        assert os.path.isfile(resume)
+        out_dir = os.path.dirname(resume)
+        checkpoint = torch.load(resume)
+        start_epoch = checkpoint['epoch']
+        best_acc = checkpoint['test_pgd20_acc']
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title, resume=True)
+    else:
+        print('==> GAIRAT')
+        logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title)
+        logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD20 Acc'])
 
-for epoch in range(start_epoch, args.epochs):
-    
-    # Get lambda
-    Lambda = adjust_Lambda(epoch + 1)
-    
-    # Adversarial training
-    train_robust_loss, lr = train(epoch, model, train_loader, optimizer, Lambda)
+    ## Training get started
+    test_nat_acc = 0
+    test_pgd20_acc = 0
 
-    # Evalutions similar to DAT.
-    _, test_nat_acc = attack.eval_clean(model, test_loader)
-    _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+    for epoch in range(start_epoch, args.epochs):
+        
+        # Get lambda
+        
+        Lambda = adjust_Lambda(epoch + 1)
+        
+        # Adversarial training
+        train_robust_loss, lr = train(epoch, model, train_loader, optimizer, Lambda)
+        print("ssss")
+
+        # Evalutions similar to DAT.
+        _, test_nat_acc = attack.eval_clean(model, test_loader)
+        _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
 
 
-    print(
-        'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
-        epoch,
-        args.epochs,
-        lr,
-        test_nat_acc,
-        test_pgd20_acc)
-        )
-         
-    logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
-    
-    # Save the best checkpoint
-    if test_pgd20_acc > best_acc:
-        best_acc = test_pgd20_acc
+        print(
+            'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
+            epoch,
+            args.epochs,
+            lr,
+            test_nat_acc,
+            test_pgd20_acc)
+            )
+            
+        logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
+        
+        # Save the best checkpoint
+        if test_pgd20_acc > best_acc:
+            best_acc = test_pgd20_acc
+            save_checkpoint({
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'test_nat_acc': test_nat_acc, 
+                    'test_pgd20_acc': test_pgd20_acc,
+                    'optimizer' : optimizer.state_dict(),
+                },filename='bestpoint.pth.tar')
+
+        # Save the last checkpoint
         save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'test_nat_acc': test_nat_acc, 
-                'test_pgd20_acc': test_pgd20_acc,
-                'optimizer' : optimizer.state_dict(),
-            },filename='bestpoint.pth.tar')
-
-    # Save the last checkpoint
-    save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'test_nat_acc': test_nat_acc, 
-                'test_pgd20_acc': test_pgd20_acc,
-                'optimizer' : optimizer.state_dict(),
-            })
-    
-logger_test.close()
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'test_nat_acc': test_nat_acc, 
+                    'test_pgd20_acc': test_pgd20_acc,
+                    'optimizer' : optimizer.state_dict(),
+                })
+        
+    logger_test.close()

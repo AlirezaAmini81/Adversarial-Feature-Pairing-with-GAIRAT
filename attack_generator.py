@@ -28,7 +28,7 @@ def GA_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,r
         x_adv = torch.clamp(x_adv, 0.0, 1.0)
     for k in range(num_steps):
         x_adv.requires_grad_()
-        output = model(x_adv)
+        _, output = model(x_adv)
         predict = output.max(1, keepdim=True)[1]
         # Update Kappa
         for p in range(len(x_adv)):
