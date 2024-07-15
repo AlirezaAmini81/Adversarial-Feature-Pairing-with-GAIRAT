@@ -306,9 +306,9 @@ if __name__ == '__main__':
         def lr_schedule(t): 
             return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
 
-# # Store path
-# if not os.path.exists(runPath):
-#     os.makedirs(runPath)
+    # # Store path
+    # if not os.path.exists(runPath):
+    #     os.makedirs(runPath)
 
     models_dir = f"{runPath}/models"
     make_dir(models_dir)
@@ -433,11 +433,11 @@ if __name__ == '__main__':
                 runPath,
             )
 
-            best_eval_acc_adv = (
-                max(best_eval_acc_adv, agg["test_adv_acc"][-1])
-                if not best_eval_acc_adv is None
-                else agg["test_adv_acc"][-1]
-            )
+            # best_eval_acc_adv = (
+            #     max(best_eval_acc_adv, agg["test_adv_acc"][-1])
+            #     if not best_eval_acc_adv is None
+            #     else agg["test_adv_acc"][-1]
+            # )
             custom_plot_loss(
                 agg,
                 ["train_acc", "test_adv_acc"],
