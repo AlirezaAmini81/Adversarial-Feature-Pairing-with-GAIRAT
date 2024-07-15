@@ -52,27 +52,43 @@ def GA_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,r
     x_adv = Variable(x_adv, requires_grad=False)
     return x_adv, Kappa
 
-def eval_clean(model, test_loader):
+def eval_clean(model, agg, test_loader, epoch):
+    dict_name = 'test_clean'
     model.eval()
     test_loss = 0
     correct = 0
+    num_data = 0
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.cuda(), target.cuda()
+            num_data += target.shape[0]
             output = model(data)
             test_loss += F.cross_entropy(output, target, size_average=False).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
     test_loss /= len(test_loader.dataset)
     test_accuracy = correct / len(test_loader.dataset)
+
+    num_batches = len(test_loader)
+    agg[f"{dict_name}_loss"].append(test_loss)
+    agg[f"{dict_name}_acc"].append(
+        agg[f"{dict_name}_running_corrects"][epoch] / num_data
+    )
+
+    agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
+    agg[f"{dict_name}_ce_loss"][epoch] /= num_batches
+
     return test_loss, test_accuracy
 
-def eval_robust(model, test_loader, perturb_steps, epsilon, step_size, loss_fn, category, random):
+def eval_robust(model, agg, test_loader, epoch, perturb_steps, epsilon, step_size, loss_fn, category, random):
+    dict_name = 'test_adv'
     model.eval()
     test_loss = 0
     correct = 0
+    num_data = 0
     with torch.enable_grad():
         for data, target in test_loader:
+            num_data += target.shape[0]
             data, target = data.cuda(), target.cuda()
             x_adv, _ = GA_PGD(model,data,target,epsilon,step_size,perturb_steps,loss_fn,category,rand_init=random)
             output = model(x_adv)
@@ -81,5 +97,14 @@ def eval_robust(model, test_loader, perturb_steps, epsilon, step_size, loss_fn, 
             correct += pred.eq(target.view_as(pred)).sum().item()
     test_loss /= len(test_loader.dataset)
     test_accuracy = correct / len(test_loader.dataset)
+
+    num_batches = len(test_loader)
+    agg[f"{dict_name}_loss"].append(test_loss)
+    agg[f"{dict_name}_acc"].append(
+        agg[f"{dict_name}_running_corrects"][epoch] / num_data
+    )
+
+    agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
+    agg[f"{dict_name}_ce_loss"][epoch] /= num_batches
     return test_loss, test_accuracy
 

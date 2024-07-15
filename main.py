@@ -8,14 +8,35 @@ from GAIR import GAIR
 import numpy as np
 import attack_generator as attack
 from utils import Logger
+from pathlib import Path
+from tempfile import mkdtemp
+from collections import defaultdict
+
+
+from utils import constants
+from utils.plot_utils import custom_plot_loss, plot_conf, make_dir
+
+from utils.log import (
+    Logger,
+    Timer,
+    save_model,
+    save_vars,
+    DefaultList,
+    save_model_checkpoint,
+)
+
+
 
 parser = argparse.ArgumentParser(description='GAIRAT: Geometry-aware instance-dependent adversarial training')
 parser.add_argument('--epochs', type=int, default=120, metavar='N', help='number of epochs to train')
 parser.add_argument('--weight-decay', '--wd', default=2e-4, type=float, metavar='W')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='SGD momentum')
+
+## PGD settings
 parser.add_argument('--epsilon', type=float, default=0.031, help='perturbation bound')
 parser.add_argument('--num-steps', type=int, default=10, help='maximum perturbation step K')
 parser.add_argument('--step-size', type=float, default=0.007, help='step size')
+
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed')
 parser.add_argument('--net', type=str, default="WRN",help="decide which network to use,choose from smallcnn,resnet18,WRN")
 parser.add_argument('--dataset', type=str, default="cifar10", help="choose from cifar10,svhn,cifar100,mnist")
@@ -24,7 +45,9 @@ parser.add_argument('--depth',type=int,default=32,help='WRN depth')
 parser.add_argument('--width-factor',type=int,default=10,help='WRN width factor')
 parser.add_argument('--drop-rate',type=float,default=0.0, help='WRN drop rate')
 parser.add_argument('--resume',type=str,default=None,help='whether to resume training')
-parser.add_argument('--out-dir',type=str,default='./GAIRAT_result',help='dir of output')
+
+parser.add_argument('--experiment',type=str, required=True,help='dir of output')
+
 parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverge', 'piecewise', 'linear', 'onedrop', 'multipledecay', 'cosine'])
 parser.add_argument('--lr-max', default=0.1, type=float)
 parser.add_argument('--lr-one-drop', default=0.01, type=float)
@@ -32,6 +55,7 @@ parser.add_argument('--lr-drop-epoch', default=100, type=int)
 
 parser.add_argument('--objective',  choices=['AT', 'GAIRAT', 'AFP', 'GAIRAT_AFP'], required=True)
 
+## GAIRAT settings
 parser.add_argument('--Lambda',type=str, default='-1.0', help='parameter for GAIR')
 parser.add_argument('--Lambda_max',type=float, default=float('inf'), help='max Lambda')
 parser.add_argument('--Lambda_schedule', default='fixed', choices=['linear', 'piecewise', 'fixed'])
@@ -39,7 +63,15 @@ parser.add_argument('--weight_assignment_function', default='Tanh', choices=['Di
 parser.add_argument('--begin_epoch', type=int, default=60, help='when to use GAIR')
 
 parser.add_argument('--alpha', type=float, default=0.01, help='The coefficient of the feature pairwise loss')
+
 args = parser.parse_args()
+
+
+experiment_dir = Path(f"{constants.Constants.OUTPUT_DIR}/" + args.experiment)
+experiment_dir.mkdir(parents=True, exist_ok=True)
+runPath = mkdtemp(dir=str(experiment_dir))
+
+print(runPath)
 
 # Training settings
 seed = args.seed
@@ -125,7 +157,7 @@ def save_checkpoint(state, checkpoint=out_dir, filename='checkpoint.pth.tar'):
     torch.save(state, filepath)
 
 # Get adversarially robust network
-def train(epoch, model, train_loader, optimizer, Lambda):
+def train(epoch, agg, model, train_loader, optimizer, Lambda):
     
     lr = 0
     num_data = 0
@@ -165,6 +197,14 @@ def train(epoch, model, train_loader, optimizer, Lambda):
         print("llll")
 
     train_robust_loss = train_robust_loss / num_data
+
+    num_batches = len(train_loader)
+    agg["train_loss"].append(train_robust_loss)
+    agg["train_acc"].append(agg["train_running_corrects"][epoch] / num_data)
+
+    agg["train_aux_loss"][epoch] /= num_batches
+    agg["train_ce_loss"][epoch] /= num_batches
+    agg["train_pairwise_loss"][epoch] /= num_batches
 
     return train_robust_loss, lr
 
@@ -208,6 +248,7 @@ def calculate_loss(args, epoch, data, x_adv, target, Lambda, Kappa):
             ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
             return ce_loss + args.alpha * pairwise_loss
 
+
 # Adjust lambda for weight assignment using epoch
 def adjust_Lambda(epoch):
     Lam = float(args.Lambda)
@@ -244,6 +285,9 @@ def adjust_Lambda(epoch):
     return Lambda
 
 if __name__ == '__main__':
+
+    models_dir = f"{runPath}/models"
+    make_dir(models_dir)
 
     # Setup data loader
     transform_train = transforms.Compose([
@@ -297,50 +341,119 @@ if __name__ == '__main__':
     test_nat_acc = 0
     test_pgd20_acc = 0
 
-    for epoch in range(start_epoch, args.epochs):
-        
-        # Get lambda
-        
-        Lambda = adjust_Lambda(epoch + 1)
-        
-        # Adversarial training
-        train_robust_loss, lr = train(epoch, model, train_loader, optimizer, Lambda)
-        print("ssss")
+    with Timer("Neural-Net-Pr") as t:
+        agg = defaultdict(DefaultList)
+        agg["optimizer"] = optimizer
 
-        # Evalutions similar to DAT.
-        _, test_nat_acc = attack.eval_clean(model, test_loader)
-        _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+        for epoch in range(start_epoch, args.epochs):
+            
+            # Get lambda
+            
+            Lambda = adjust_Lambda(epoch + 1)
+            
+            # Adversarial training
+            train_robust_loss, lr = train(epoch, agg, model, train_loader, optimizer, Lambda)
+            print("ssss")
+
+            # Evalutions similar to DAT.
+            _, test_nat_acc = attack.eval_clean(model, agg, test_loader, epoch)
+            _, test_pgd20_acc = attack.eval_robust(model, agg, test_loader, epoch, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
 
 
-        print(
-            'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
-            epoch,
-            args.epochs,
-            lr,
-            test_nat_acc,
-            test_pgd20_acc)
+            print(
+                'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
+                epoch,
+                args.epochs,
+                lr,
+                test_nat_acc,
+                test_pgd20_acc)
+                )
+                
+            logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
+
+            custom_plot_loss(
+                    agg,
+                    ["train_loss", "test_clean_loss"],
+                    "losses",
+                    "loss",
+                    runPath,
+                )
+            custom_plot_loss(
+                agg,
+                ["train_acc", f"test_clean_acc"],
+                "acc",
+                "acc",
+                runPath,
+                False,
+            )
+            custom_plot_loss(
+                agg,
+                ["train_aux_loss", "train_ce_loss"],
+                "train all losses",
+                "train all losses",
+                runPath,
+            )
+            custom_plot_loss(
+                agg,
+                ["train_pairwise_loss", "train_ce_loss"],
+                "train pairwise\ce losses",
+                "train pairwise\ce losses",
+                runPath,
+            )
+            custom_plot_loss(
+                agg,
+                ["test_clean_aux_loss", "test_clean_ce_loss"],
+                "test all losses",
+                "test all losses",
+                runPath,
+            )
+
+            best_eval_acc_adv = (
+                max(best_eval_acc_adv, agg["test_adv_acc"][-1])
+                if not best_eval_acc_adv is None
+                else agg["test_adv_acc"][-1]
+            )
+            custom_plot_loss(
+                agg,
+                ["train_acc", "test_adv_acc"],
+                "acc",
+                "acc_adv",
+                runPath,
+                False,
+            )
+            custom_plot_loss(
+                agg,
+                ["train_loss", "test_adv_loss"],
+                "losses_adv",
+                "losses_adv",
+                runPath,
+            )
+            custom_plot_loss(
+                agg,
+                ["test_adv_aux_loss", "test_adv_ce_loss"],
+                "test all losses _adv",
+                "test all losses _adv",
+                runPath,
             )
             
-        logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
-        
-        # Save the best checkpoint
-        if test_pgd20_acc > best_acc:
-            best_acc = test_pgd20_acc
-            save_checkpoint({
-                    'epoch': epoch + 1,
-                    'state_dict': model.state_dict(),
-                    'test_nat_acc': test_nat_acc, 
-                    'test_pgd20_acc': test_pgd20_acc,
-                    'optimizer' : optimizer.state_dict(),
-                },filename='bestpoint.pth.tar')
+            # Save the best checkpoint
+            if test_pgd20_acc > best_acc:
+                best_acc = test_pgd20_acc
+                save_checkpoint({
+                        'epoch': epoch + 1,
+                        'state_dict': model.state_dict(),
+                        'test_nat_acc': test_nat_acc, 
+                        'test_pgd20_acc': test_pgd20_acc,
+                        'optimizer' : optimizer.state_dict(),
+                    },filename='bestpoint.pth.tar')
 
-        # Save the last checkpoint
-        save_checkpoint({
-                    'epoch': epoch + 1,
-                    'state_dict': model.state_dict(),
-                    'test_nat_acc': test_nat_acc, 
-                    'test_pgd20_acc': test_pgd20_acc,
-                    'optimizer' : optimizer.state_dict(),
-                })
-        
-    logger_test.close()
+            # Save the last checkpoint
+            save_checkpoint({
+                        'epoch': epoch + 1,
+                        'state_dict': model.state_dict(),
+                        'test_nat_acc': test_nat_acc, 
+                        'test_pgd20_acc': test_pgd20_acc,
+                        'optimizer' : optimizer.state_dict(),
+                    })
+            
+        logger_test.close()
