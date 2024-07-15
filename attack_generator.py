@@ -62,7 +62,7 @@ def eval_clean(model, agg, test_loader, epoch):
         for data, target in test_loader:
             data, target = data.cuda(), target.cuda()
             num_data += target.shape[0]
-            output = model(data)
+            _, output = model(data)
             test_loss += F.cross_entropy(output, target, size_average=False).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
@@ -91,7 +91,7 @@ def eval_robust(model, agg, test_loader, epoch, perturb_steps, epsilon, step_siz
             num_data += target.shape[0]
             data, target = data.cuda(), target.cuda()
             x_adv, _ = GA_PGD(model,data,target,epsilon,step_size,perturb_steps,loss_fn,category,rand_init=random)
-            output = model(x_adv)
+            _, output = model(x_adv)
             test_loss += F.cross_entropy(output, target, size_average=False).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
