@@ -1,6 +1,7 @@
 import numpy as np
 from models import *
 from torch.autograd import Variable
+from main import calculate_loss
 
 def cwloss(output, target,confidence=50, num_classes=10):
     # Compute the probability of the label class versus the maximum other
@@ -71,16 +72,14 @@ def eval_clean(model, agg, test_loader, epoch):
 
     num_batches = len(test_loader)
     agg[f"{dict_name}_loss"].append(test_loss)
-    agg[f"{dict_name}_acc"].append(
-        agg[f"{dict_name}_running_corrects"][epoch] / num_data
-    )
+    agg[f"{dict_name}_acc"].append(test_accuracy)
 
     agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
     agg[f"{dict_name}_ce_loss"][epoch] /= num_batches
 
     return test_loss, test_accuracy
 
-def eval_robust(model, agg, test_loader, epoch, perturb_steps, epsilon, step_size, loss_fn, category, random):
+def eval_robust(model, args, agg, test_loader, epoch, loss_fn, category, random):
     dict_name = 'test_adv'
     model.eval()
     test_loss = 0
@@ -90,9 +89,9 @@ def eval_robust(model, agg, test_loader, epoch, perturb_steps, epsilon, step_siz
         for data, target in test_loader:
             num_data += target.shape[0]
             data, target = data.cuda(), target.cuda()
-            x_adv, _ = GA_PGD(model,data,target,epsilon,step_size,perturb_steps,loss_fn,category,rand_init=random)
+            x_adv, _ = GA_PGD(model, data,target, args.epsilon, args.step_size, args.num_steps ,loss_fn,category,rand_init=random)
             _, output = model(x_adv)
-            test_loss += F.cross_entropy(output, target, size_average=False).item()
+            test_loss += calculate_loss(args, agg, epoch, data, target, x_adv, phase=dict_name).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
     test_loss /= len(test_loader.dataset)
@@ -100,9 +99,7 @@ def eval_robust(model, agg, test_loader, epoch, perturb_steps, epsilon, step_siz
 
     num_batches = len(test_loader)
     agg[f"{dict_name}_loss"].append(test_loss)
-    agg[f"{dict_name}_acc"].append(
-        agg[f"{dict_name}_running_corrects"][epoch] / num_data
-    )
+    agg[f"{dict_name}_acc"].append(test_accuracy)
 
     agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
     agg[f"{dict_name}_ce_loss"][epoch] /= num_batches

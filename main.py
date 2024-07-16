@@ -87,25 +87,14 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
         data, target = data.cuda(), target.cuda()
         
         # Get adversarial data and geometry value
-        x_adv, Kappa = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
+        x_adv, Kappa = attack.GA_PGD(model, data, target, args.epsilon, args.step_size, args.num_steps, loss_fn="cent",category="Madry", rand_init=True)
 
         model.train()
         lr = lr_schedule(epoch + 1)
         optimizer.param_groups[0].update(lr=lr)
         optimizer.zero_grad()
         
-        # logit = model(x_adv)
-
-        # if (epoch + 1) >= args.begin_epoch:
-        #     Kappa = Kappa.cuda()
-        #     loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
-        #     # Calculate weight assignment according to geometry value
-        #     normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
-        #     loss = loss.mul(normalized_reweight).mean()
-        # else:
-        #     loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-
-        loss = calculate_loss(args, agg, epoch, data, x_adv, target, Lambda, Kappa)
+        loss = calculate_loss(args, agg, epoch, data, target, x_adv, Lambda, Kappa)
         train_robust_loss += loss.item() * len(x_adv)
         
         loss.backward()
@@ -113,8 +102,6 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
         
         num_data += len(data)
         print(batch_idx)
-
-
 
     train_robust_loss = train_robust_loss / num_data
 
@@ -129,14 +116,14 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
     return train_robust_loss, lr
 
 # Calculate Loss
-def calculate_loss(args, agg, epoch, data, x_adv, target, Lambda, Kappa):
+def calculate_loss(args, agg, epoch, data, target, x_adv, Lambda=None, Kappa=None, phase='train'):
     adv_feats, logit = model(x_adv)
     _, preds = torch.max(logit.data, dim=1)
-    agg[f"train_running_corrects"][epoch] += (preds == target).sum().item()
+    agg[f"{phase}_running_corrects"][epoch] += (preds == target).sum().item()
 
-    if args.objective == 'AT':
+    if args.objective == 'AT' or (args.objective == 'GAIRAT' and phase == 'test'):
         ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-        agg["train_ce_loss"][epoch] += ce_loss.item()
+        agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
         return ce_loss
     elif args.objective == 'GAIRAT':
         if (epoch + 1) >= args.begin_epoch:
@@ -146,20 +133,20 @@ def calculate_loss(args, agg, epoch, data, x_adv, target, Lambda, Kappa):
             normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
             loss = loss.mul(normalized_reweight).mean()
             loss.mul(normalized_reweight).mean()
-            agg["train_ce_loss"][epoch] += loss.item()
+            agg[f"{phase}_ce_loss"][epoch] += loss.item()
             return loss
         else:
             loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-            agg["train_ce_loss"][epoch] += loss.item()
+            agg[f"{phase}_ce_loss"][epoch] += loss.item()
             return loss
     
-    elif args.objective == 'AFP':
+    elif args.objective == 'AFP' or (args.objective == 'GAIRAT_AFP' and phase[0:4] == 'test'):
         mse = nn.MSELoss(reduction="none")
         cln_feats, _  = model(data)
         pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
         ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-        agg["train_aux_loss"][epoch] += pairwise_loss.item()
-        agg["train_ce_loss"][epoch] += ce_loss.item()
+        agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
+        agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
         return ce_loss + args.alpha * pairwise_loss
     
     elif args.objective == 'GAIRAT_AFP':
@@ -177,15 +164,15 @@ def calculate_loss(args, agg, epoch, data, x_adv, target, Lambda, Kappa):
             normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
             pairwise_loss =  pairwise_loss.mul(normalized_reweight).mean()
             ce_loss = ce_loss.mul(normalized_reweight).mean()
-            agg["train_aux_loss"][epoch] += pairwise_loss.item()
-            agg["train_ce_loss"][epoch] += ce_loss.item()
+            agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
+            agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
 
             return ce_loss + args.alpha * pairwise_loss
         else:
             pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
             ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-            agg["train_aux_loss"][epoch] += pairwise_loss.item()
-            agg["train_ce_loss"][epoch] += ce_loss.item()
+            agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
+            agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
 
             return ce_loss + args.alpha * pairwise_loss
 
@@ -381,8 +368,8 @@ if __name__ == '__main__':
             print("ssss")
 
             # Evalutions similar to DAT.
-            _, test_nat_acc = attack.eval_clean(model, agg, test_loader, epoch)
-            _, test_pgd20_acc = attack.eval_robust(model, agg, test_loader, epoch, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+            _, test_nat_acc = attack.eval_clean(model, args, agg, test_loader, epoch)
+            _, test_pgd20_acc = attack.eval_robust(model, args, agg, test_loader, epoch, loss_fn="cent", category="Madry", random=True)
 
 
             print(
@@ -432,12 +419,6 @@ if __name__ == '__main__':
                 "test all losses",
                 runPath,
             )
-
-            # best_eval_acc_adv = (
-            #     max(best_eval_acc_adv, agg["test_adv_acc"][-1])
-            #     if not best_eval_acc_adv is None
-            #     else agg["test_adv_acc"][-1]
-            # )
             custom_plot_loss(
                 agg,
                 ["train_acc", "test_adv_acc"],
@@ -481,4 +462,4 @@ if __name__ == '__main__':
                         'optimizer' : optimizer.state_dict(),
                     }, checkpoint=runPath)
             
-        logger_test.close()
+        # logger_test.close()
