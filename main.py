@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import torchvision
 import torch.optim as optim
@@ -7,11 +8,11 @@ from models import *
 from GAIR import GAIR
 import numpy as np
 import attack_generator as attack
-from utils import Logger
 from pathlib import Path
 from tempfile import mkdtemp
 from collections import defaultdict
 from tqdm import trange, tqdm
+import json
 
 
 
@@ -26,7 +27,6 @@ from utils.log import (
     DefaultList,
     save_model_checkpoint,
 )
-
 
 
 parser = argparse.ArgumentParser(description='GAIRAT: Geometry-aware instance-dependent adversarial training')
@@ -68,8 +68,100 @@ parser.add_argument('--alpha', type=float, default=0.01, help='The coefficient o
 
 args = parser.parse_args()
 
+experiment_dir = Path(f"{constants.Constants.OUTPUT_DIR}/" + args.experiment)
+experiment_dir.mkdir(parents=True, exist_ok=True)
+runPath = mkdtemp(dir=str(experiment_dir))
+
+sys.stdout = Logger("{}/run.log".format(runPath))
+print("Expt:", runPath)
+command_line_args = sys.argv
+command = " ".join(command_line_args)
+print(f"The command that ran this script: {command}")
+
+print("runPath:",runPath)
+
+# Training settings
+seed = args.seed
+momentum = args.momentum
+weight_decay = args.weight_decay
+depth = args.depth
+width_factor = args.width_factor
+drop_rate = args.drop_rate
+resume = args.resume
+
+torch.manual_seed(seed)
+np.random.seed(seed)
+torch.cuda.manual_seed_all(seed)
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = True
+
+# Models and optimizer
+if args.net == "smallcnn":
+    model = SmallCNN().cuda()
+    net = "smallcnn"
+if args.net == "resnet18":
+    model = ResNet18().cuda()
+    net = "resnet18"
+if args.net == "preactresnet18":
+    model = PreActResNet18().cuda()
+    net = "preactresnet18"
+if args.net == "WRN":
+    model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
+    net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
+if args.net == "Madry":
+    model = Madry().cuda()
+    net = "Maddry"
+
+model = torch.nn.DataParallel(model)
+optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
+
+# Learning schedules
+if args.lr_schedule == 'superconverge':
+    lr_schedule = lambda t: np.interp([t], [0, args.epochs * 2 // 5, args.epochs], [0, args.lr_max, 0])[0]
+elif args.lr_schedule == 'piecewise':
+    def lr_schedule(t):
+        if args.epochs >= 110:
+            # Train Wide-ResNet
+            if t / args.epochs < 0.5:
+                return args.lr_max
+            elif t / args.epochs < 0.75:
+                return args.lr_max / 10.
+            elif t / args.epochs < (11/12):
+                return args.lr_max / 100.
+            else:
+                return args.lr_max / 200.
+        else:
+            # Train ResNet
+            if t / args.epochs < 0.3:
+                return args.lr_max
+            elif t / args.epochs < 0.6:
+                return args.lr_max / 10.
+            else:
+                return args.lr_max / 100.
+elif args.lr_schedule == 'linear':
+    lr_schedule = lambda t: np.interp([t], [0, args.epochs // 3, args.epochs * 2 // 3, args.epochs], [args.lr_max, args.lr_max, args.lr_max / 10, args.lr_max / 100])[0]
+elif args.lr_schedule == 'onedrop':
+    def lr_schedule(t):
+        if t < args.lr_drop_epoch:
+            return args.lr_max
+        else:
+            return args.lr_one_drop
+elif args.lr_schedule == 'multipledecay':
+    def lr_schedule(t):
+        return args.lr_max - (t//(args.epochs//10))*(args.lr_max/10)
+elif args.lr_schedule == 'cosine': 
+    def lr_schedule(t): 
+        return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
+
+# # Store path
+# if not os.path.exists(runPath):
+#     os.makedirs(runPath)
 
 
+with open("{}/args.json".format(runPath), "w") as fp:
+    json.dump(args.__dict__, fp)
+torch.save(args, "{}/args.rar".format(runPath))
+print("args: \n", args)
 
 # Save checkpoint
 def save_checkpoint(state, checkpoint, filename='checkpoint.pth.tar'):
@@ -233,90 +325,6 @@ def adjust_Lambda(epoch):
     return Lambda
 
 if __name__ == '__main__':
-
-    experiment_dir = Path(f"{constants.Constants.OUTPUT_DIR}/" + args.experiment)
-    experiment_dir.mkdir(parents=True, exist_ok=True)
-    runPath = mkdtemp(dir=str(experiment_dir))
-
-    print("qqq",runPath)
-
-    # Training settings
-    seed = args.seed
-    momentum = args.momentum
-    weight_decay = args.weight_decay
-    depth = args.depth
-    width_factor = args.width_factor
-    drop_rate = args.drop_rate
-    resume = args.resume
-
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = True
-
-    # Models and optimizer
-    if args.net == "smallcnn":
-        model = SmallCNN().cuda()
-        net = "smallcnn"
-    if args.net == "resnet18":
-        model = ResNet18().cuda()
-        net = "resnet18"
-    if args.net == "preactresnet18":
-        model = PreActResNet18().cuda()
-        net = "preactresnet18"
-    if args.net == "WRN":
-        model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
-        net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
-    if args.net == "Madry":
-        model = Madry().cuda()
-        net = "Maddry"
-
-    model = torch.nn.DataParallel(model)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
-
-    # Learning schedules
-    if args.lr_schedule == 'superconverge':
-        lr_schedule = lambda t: np.interp([t], [0, args.epochs * 2 // 5, args.epochs], [0, args.lr_max, 0])[0]
-    elif args.lr_schedule == 'piecewise':
-        def lr_schedule(t):
-            if args.epochs >= 110:
-                # Train Wide-ResNet
-                if t / args.epochs < 0.5:
-                    return args.lr_max
-                elif t / args.epochs < 0.75:
-                    return args.lr_max / 10.
-                elif t / args.epochs < (11/12):
-                    return args.lr_max / 100.
-                else:
-                    return args.lr_max / 200.
-            else:
-                # Train ResNet
-                if t / args.epochs < 0.3:
-                    return args.lr_max
-                elif t / args.epochs < 0.6:
-                    return args.lr_max / 10.
-                else:
-                    return args.lr_max / 100.
-    elif args.lr_schedule == 'linear':
-        lr_schedule = lambda t: np.interp([t], [0, args.epochs // 3, args.epochs * 2 // 3, args.epochs], [args.lr_max, args.lr_max, args.lr_max / 10, args.lr_max / 100])[0]
-    elif args.lr_schedule == 'onedrop':
-        def lr_schedule(t):
-            if t < args.lr_drop_epoch:
-                return args.lr_max
-            else:
-                return args.lr_one_drop
-    elif args.lr_schedule == 'multipledecay':
-        def lr_schedule(t):
-            return args.lr_max - (t//(args.epochs//10))*(args.lr_max/10)
-    elif args.lr_schedule == 'cosine': 
-        def lr_schedule(t): 
-            return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
-
-    # # Store path
-    # if not os.path.exists(runPath):
-    #     os.makedirs(runPath)
-
     models_dir = f"{runPath}/models"
     make_dir(models_dir)
 
@@ -367,25 +375,26 @@ if __name__ == '__main__':
         print('==> GAIRAT')
         # logger_test = Logger(os.path.join(runPath, 'log_results.txt'), title=title)
         # logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD20 Acc'])
-
-    ## Training get started
-    test_nat_acc = 0
-    test_pgd20_acc = 0
+        ## Training get started
+        test_nat_acc = 0
+        test_pgd20_acc = 0
 
     with Timer("Neural-Net-Pr") as t:
         agg = defaultdict(DefaultList)
         agg["optimizer"] = optimizer
+        best_eval_loss = None
+        best_eval_acc = None
+        best_eval_acc_adv = None
 
         for epoch in trange(start_epoch, args.epochs):
             
             # Get lambda
             Lambda = adjust_Lambda(epoch + 1)
 
-            print("llll",runPath)
+            print(runPath)
             
             # Adversarial training
             train_robust_loss, lr = train(epoch, agg, model, train_loader, optimizer, Lambda)
-            print("ssss")
 
             # Evalutions similar to DAT.
             _, test_nat_acc = attack.eval_clean(model, agg, test_loader, epoch)
@@ -400,7 +409,14 @@ if __name__ == '__main__':
                 test_nat_acc,
                 test_pgd20_acc)
                 )
-                
+            
+            if (best_eval_acc is None or agg["test_clean_acc"][-1] >= best_eval_acc):
+                save_model(model, models_dir + f"/model_best_acc.rar")
+            if best_eval_acc_adv is None or agg["test_adv_acc"][-1] >= best_eval_acc_adv:
+                save_model(model, models_dir + f"/model_best_adv_acc.rar")
+            save_model(model, models_dir + f"/model_last.rar")
+            save_model(optimizer, models_dir + f"/optim_last.rar")
+
             # logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
 
             custom_plot_loss(

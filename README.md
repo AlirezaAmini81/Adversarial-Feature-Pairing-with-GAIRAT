@@ -1,4 +1,4 @@
-# Geometry-aware Instance-reweighted Adversarial Training
+#  Adversarial Feature Pairing  GAIRAT (Geometry-aware Instance-reweighted Adversarial Training)
 
 This repository provides codes for **Geometry-aware Instance-reweighted Adversarial Training** 
 (https://openreview.net/forum?id=iAX0l6Cz8ub) (ICLR oral)<br/>
