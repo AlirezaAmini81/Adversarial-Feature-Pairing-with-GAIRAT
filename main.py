@@ -11,6 +11,8 @@ from utils import Logger
 from pathlib import Path
 from tempfile import mkdtemp
 from collections import defaultdict
+from tqdm import trange, tqdm
+
 
 
 from utils import constants
@@ -94,7 +96,7 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
         optimizer.param_groups[0].update(lr=lr)
         optimizer.zero_grad()
         
-        loss = calculate_loss(args, agg, epoch, data, target, x_adv, Lambda, Kappa)
+        loss = calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda, Kappa)
         train_robust_loss += loss.item() * len(x_adv)
         
         loss.backward()
@@ -113,10 +115,28 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
     agg["train_ce_loss"][epoch] /= num_batches
     agg["train_pairwise_loss"][epoch] /= num_batches
 
+    print(
+        "Epoch {}/{}: Train Acc: {} ({}/{})".format(
+            epoch,
+            args.epochs,
+            agg["train_acc"][epoch],
+            agg["train_running_corrects"][epoch],
+            num_data,
+        ),
+        end=" ",
+    )
+    print(
+        "| Train Total Loss: {} ({}+{})".format(
+            agg["train_loss"][epoch],
+            agg["train_aux_loss"][epoch],
+            agg["train_ce_loss"][epoch],
+        )
+    )
+
     return train_robust_loss, lr
 
 # Calculate Loss
-def calculate_loss(args, agg, epoch, data, target, x_adv, Lambda=None, Kappa=None, phase='train'):
+def calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda=None, Kappa=None, phase='train'):
     adv_feats, logit = model(x_adv)
     _, preds = torch.max(logit.data, dim=1)
     agg[f"{phase}_running_corrects"][epoch] += (preds == target).sum().item()
@@ -356,7 +376,7 @@ if __name__ == '__main__':
         agg = defaultdict(DefaultList)
         agg["optimizer"] = optimizer
 
-        for epoch in range(start_epoch, args.epochs):
+        for epoch in trange(start_epoch, args.epochs):
             
             # Get lambda
             Lambda = adjust_Lambda(epoch + 1)
@@ -368,7 +388,7 @@ if __name__ == '__main__':
             print("ssss")
 
             # Evalutions similar to DAT.
-            _, test_nat_acc = attack.eval_clean(model, args, agg, test_loader, epoch)
+            _, test_nat_acc = attack.eval_clean(model, agg, test_loader, epoch)
             _, test_pgd20_acc = attack.eval_robust(model, args, agg, test_loader, epoch, loss_fn="cent", category="Madry", random=True)
 
 

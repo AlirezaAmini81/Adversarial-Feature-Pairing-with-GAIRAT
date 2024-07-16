@@ -77,6 +77,26 @@ def eval_clean(model, agg, test_loader, epoch):
     agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
     agg[f"{dict_name}_ce_loss"][epoch] /= num_batches
 
+    print(
+        "Epoch {}/{}: {} Acc: {} ({}/{})".format(
+            epoch,
+            args.epochs,
+            dict_name,
+            agg[f"{dict_name}_acc"][epoch],
+            agg[f"{dict_name}_running_corrects"][epoch],
+            num_data,
+        ),
+        end=" ",
+    )
+    print(
+        "| {} Total Loss: {} ({}+{})".format(
+            dict_name,
+            agg[f"{dict_name}_loss"][epoch],
+            agg[f"{dict_name}_aux_loss"][epoch],
+            agg[f"{dict_name}_ce_loss"][epoch],
+        )
+    )
+
     return test_loss, test_accuracy
 
 def eval_robust(model, args, agg, test_loader, epoch, loss_fn, category, random):
@@ -91,7 +111,7 @@ def eval_robust(model, args, agg, test_loader, epoch, loss_fn, category, random)
             data, target = data.cuda(), target.cuda()
             x_adv, _ = GA_PGD(model, data,target, args.epsilon, args.step_size, args.num_steps ,loss_fn,category,rand_init=random)
             _, output = model(x_adv)
-            test_loss += calculate_loss(args, agg, epoch, data, target, x_adv, phase=dict_name).item()
+            test_loss += calculate_loss(args, model, agg, epoch, data, target, x_adv, phase=dict_name).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
     test_loss /= len(test_loader.dataset)
@@ -103,5 +123,26 @@ def eval_robust(model, args, agg, test_loader, epoch, loss_fn, category, random)
 
     agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
     agg[f"{dict_name}_ce_loss"][epoch] /= num_batches
+
+    rint(
+        "Epoch {}/{}: {} Acc: {} ({}/{})".format(
+            epoch,
+            args.epochs,
+            dict_name,
+            agg[f"{dict_name}_acc"][epoch],
+            agg[f"{dict_name}_running_corrects"][epoch],
+            num_data,
+        ),
+        end=" ",
+    )
+    print(
+        "| {} Total Loss: {} ({}+{})".format(
+            dict_name,
+            agg[f"{dict_name}_loss"][epoch],
+            agg[f"{dict_name}_aux_loss"][epoch],
+            agg[f"{dict_name}_ce_loss"][epoch],
+        )
+    )
+    
     return test_loss, test_accuracy
 
