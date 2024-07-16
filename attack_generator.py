@@ -53,7 +53,7 @@ def GA_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,r
     x_adv = Variable(x_adv, requires_grad=False)
     return x_adv, Kappa
 
-def eval_clean(model, agg, test_loader, epoch):
+def eval_clean(model, args, agg, test_loader, epoch):
     dict_name = 'test_clean'
     model.eval()
     test_loss = 0
@@ -124,7 +124,7 @@ def eval_robust(model, args, agg, test_loader, epoch, loss_fn, category, random)
     agg[f"{dict_name}_aux_loss"][epoch] /= num_batches
     agg[f"{dict_name}_ce_loss"][epoch] /= num_batches
 
-    rint(
+    print(
         "Epoch {}/{}: {} Acc: {} ({}/{})".format(
             epoch,
             args.epochs,

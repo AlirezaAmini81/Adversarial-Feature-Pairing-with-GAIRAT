@@ -65,105 +65,12 @@ parser.add_argument('--weight_assignment_function', default='Tanh', choices=['Di
 parser.add_argument('--begin_epoch', type=int, default=60, help='when to use GAIR')
 
 parser.add_argument('--alpha', type=float, default=0.01, help='The coefficient of the feature pairwise loss')
+parser.add_argument("--warmup", type=int, default=0, help="number of epochs for warming up the model with CE, for joint supervision objectives, default: (0, no warming up) ",)
 
 args = parser.parse_args()
 
-experiment_dir = Path(f"{constants.Constants.OUTPUT_DIR}/" + args.experiment)
-experiment_dir.mkdir(parents=True, exist_ok=True)
-runPath = mkdtemp(dir=str(experiment_dir))
 
-sys.stdout = Logger("{}/run.log".format(runPath))
-print("Expt:", runPath)
-command_line_args = sys.argv
-command = " ".join(command_line_args)
-print(f"The command that ran this script: {command}")
-
-print("runPath:",runPath)
-
-# Training settings
-seed = args.seed
-momentum = args.momentum
-weight_decay = args.weight_decay
-depth = args.depth
-width_factor = args.width_factor
-drop_rate = args.drop_rate
-resume = args.resume
-
-torch.manual_seed(seed)
-np.random.seed(seed)
-torch.cuda.manual_seed_all(seed)
-torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.deterministic = True
-
-# Models and optimizer
-if args.net == "smallcnn":
-    model = SmallCNN().cuda()
-    net = "smallcnn"
-if args.net == "resnet18":
-    model = ResNet18().cuda()
-    net = "resnet18"
-if args.net == "preactresnet18":
-    model = PreActResNet18().cuda()
-    net = "preactresnet18"
-if args.net == "WRN":
-    model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
-    net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
-if args.net == "Madry":
-    model = Madry().cuda()
-    net = "Maddry"
-
-model = torch.nn.DataParallel(model)
-optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
-
-# Learning schedules
-if args.lr_schedule == 'superconverge':
-    lr_schedule = lambda t: np.interp([t], [0, args.epochs * 2 // 5, args.epochs], [0, args.lr_max, 0])[0]
-elif args.lr_schedule == 'piecewise':
-    def lr_schedule(t):
-        if args.epochs >= 110:
-            # Train Wide-ResNet
-            if t / args.epochs < 0.5:
-                return args.lr_max
-            elif t / args.epochs < 0.75:
-                return args.lr_max / 10.
-            elif t / args.epochs < (11/12):
-                return args.lr_max / 100.
-            else:
-                return args.lr_max / 200.
-        else:
-            # Train ResNet
-            if t / args.epochs < 0.3:
-                return args.lr_max
-            elif t / args.epochs < 0.6:
-                return args.lr_max / 10.
-            else:
-                return args.lr_max / 100.
-elif args.lr_schedule == 'linear':
-    lr_schedule = lambda t: np.interp([t], [0, args.epochs // 3, args.epochs * 2 // 3, args.epochs], [args.lr_max, args.lr_max, args.lr_max / 10, args.lr_max / 100])[0]
-elif args.lr_schedule == 'onedrop':
-    def lr_schedule(t):
-        if t < args.lr_drop_epoch:
-            return args.lr_max
-        else:
-            return args.lr_one_drop
-elif args.lr_schedule == 'multipledecay':
-    def lr_schedule(t):
-        return args.lr_max - (t//(args.epochs//10))*(args.lr_max/10)
-elif args.lr_schedule == 'cosine': 
-    def lr_schedule(t): 
-        return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
-
-# # Store path
-# if not os.path.exists(runPath):
-#     os.makedirs(runPath)
-
-
-with open("{}/args.json".format(runPath), "w") as fp:
-    json.dump(args.__dict__, fp)
-torch.save(args, "{}/args.rar".format(runPath))
-print("args: \n", args)
-
-# Save checkpoint
+# Save checkpoint0
 def save_checkpoint(state, checkpoint, filename='checkpoint.pth.tar'):
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
@@ -195,7 +102,6 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
         optimizer.step()
         
         num_data += len(data)
-        print(batch_idx)
 
     train_robust_loss = train_robust_loss / num_data
 
@@ -233,7 +139,7 @@ def calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda=None, Ka
     _, preds = torch.max(logit.data, dim=1)
     agg[f"{phase}_running_corrects"][epoch] += (preds == target).sum().item()
 
-    if args.objective == 'AT' or (args.objective == 'GAIRAT' and phase == 'test'):
+    if args.objective == 'AT' or (args.objective == 'GAIRAT' and phase[0:4] == 'test'):
         ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
         agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
         return ce_loss
@@ -253,14 +159,17 @@ def calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda=None, Ka
             return loss
     
     elif args.objective == 'AFP' or (args.objective == 'GAIRAT_AFP' and phase[0:4] == 'test'):
-        mse = nn.MSELoss(reduction="none")
-        cln_feats, _  = model(data)
-        pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
         ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-        agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
         agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
-        return ce_loss + args.alpha * pairwise_loss
-    
+        if epoch < args.warmup:
+            return ce_loss
+        else:
+            mse = nn.MSELoss(reduction="none")
+            cln_feats, _  = model(data)
+            pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
+            agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
+            return ce_loss + args.alpha * pairwise_loss
+        
     elif args.objective == 'GAIRAT_AFP':
         mse = nn.MSELoss(reduction="none")
         cln_feats, _  = model(data)
@@ -272,22 +181,28 @@ def calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda=None, Ka
             # print("ce loss", ce_loss.shape)
             # print("pairwise loss", pairwise_loss.shape)
             # Calculate weight assignment according to geometry value
-            
             normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
-            pairwise_loss =  pairwise_loss.mul(normalized_reweight).mean()
-            ce_loss = ce_loss.mul(normalized_reweight).mean()
-            agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
-            agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
-
-            return ce_loss + args.alpha * pairwise_loss
+            if epoch < args.warmup:
+                ce_loss = ce_loss.mul(normalized_reweight).mean()
+                agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
+                return ce_loss
+            else:
+                pairwise_loss =  pairwise_loss.mul(normalized_reweight).mean()
+                ce_loss = ce_loss.mul(normalized_reweight).mean()
+                agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
+                agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
+                return ce_loss + args.alpha * pairwise_loss
         else:
-            pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
             ce_loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-            agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
             agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
-
-            return ce_loss + args.alpha * pairwise_loss
-
+            if epoch < args.warmup:
+                return ce_loss
+            else:
+                mse = nn.MSELoss(reduction="none")
+                cln_feats, _  = model(data)
+                pairwise_loss = 0.5 * mse(adv_feats, cln_feats).mean()
+                agg[f"{phase}_aux_loss"][epoch] += pairwise_loss.item()
+                return ce_loss + args.alpha * pairwise_loss
 
 # Adjust lambda for weight assignment using epoch
 def adjust_Lambda(epoch):
@@ -325,6 +240,101 @@ def adjust_Lambda(epoch):
     return Lambda
 
 if __name__ == '__main__':
+    experiment_dir = Path(f"{constants.Constants.OUTPUT_DIR}/" + args.experiment)
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    runPath = mkdtemp(dir=str(experiment_dir))
+
+    sys.stdout = Logger("{}/run.log".format(runPath))
+    command_line_args = sys.argv
+    command = " ".join(command_line_args)
+
+    # Training settings
+    seed = args.seed
+    momentum = args.momentum
+    weight_decay = args.weight_decay
+    depth = args.depth
+    width_factor = args.width_factor
+    drop_rate = args.drop_rate
+    resume = args.resume
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = True
+
+    # Models and optimizer
+    if args.net == "smallcnn":
+        model = SmallCNN().cuda()
+        net = "smallcnn"
+    if args.net == "resnet18":
+        model = ResNet18().cuda()
+        net = "resnet18"
+    if args.net == "preactresnet18":
+        model = PreActResNet18().cuda()
+        net = "preactresnet18"
+    if args.net == "WRN":
+        model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
+        net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
+    if args.net == "Madry":
+        model = Madry().cuda()
+        net = "Maddry"
+
+    model = torch.nn.DataParallel(model)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
+
+    # Learning schedules
+    if args.lr_schedule == 'superconverge':
+        lr_schedule = lambda t: np.interp([t], [0, args.epochs * 2 // 5, args.epochs], [0, args.lr_max, 0])[0]
+    elif args.lr_schedule == 'piecewise':
+        def lr_schedule(t):
+            if args.epochs >= 110:
+                # Train Wide-ResNet
+                if t / args.epochs < 0.5:
+                    return args.lr_max
+                elif t / args.epochs < 0.75:
+                    return args.lr_max / 10.
+                elif t / args.epochs < (11/12):
+                    return args.lr_max / 100.
+                else:
+                    return args.lr_max / 200.
+            else:
+                # Train ResNet
+                if t / args.epochs < 0.3:
+                    return args.lr_max
+                elif t / args.epochs < 0.6:
+                    return args.lr_max / 10.
+                else:
+                    return args.lr_max / 100.
+    elif args.lr_schedule == 'linear':
+        lr_schedule = lambda t: np.interp([t], [0, args.epochs // 3, args.epochs * 2 // 3, args.epochs], [args.lr_max, args.lr_max, args.lr_max / 10, args.lr_max / 100])[0]
+    elif args.lr_schedule == 'onedrop':
+        def lr_schedule(t):
+            if t < args.lr_drop_epoch:
+                return args.lr_max
+            else:
+                return args.lr_one_drop
+    elif args.lr_schedule == 'multipledecay':
+        def lr_schedule(t):
+            return args.lr_max - (t//(args.epochs//10))*(args.lr_max/10)
+    elif args.lr_schedule == 'cosine': 
+        def lr_schedule(t): 
+            return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
+
+    # # Store path
+    # if not os.path.exists(runPath):
+    #     os.makedirs(runPath)
+
+
+    with open("{}/args.json".format(runPath), "w") as fp:
+        json.dump(args.__dict__, fp)
+    torch.save(args, "{}/args.rar".format(runPath))
+
+
+    print("Expt:", runPath)
+    print(f"The command that ran this script: {command}")
+    print("args: \n", args)
+
     models_dir = f"{runPath}/models"
     make_dir(models_dir)
 
@@ -390,14 +400,12 @@ if __name__ == '__main__':
             
             # Get lambda
             Lambda = adjust_Lambda(epoch + 1)
-
-            print(runPath)
             
             # Adversarial training
             train_robust_loss, lr = train(epoch, agg, model, train_loader, optimizer, Lambda)
 
             # Evalutions similar to DAT.
-            _, test_nat_acc = attack.eval_clean(model, agg, test_loader, epoch)
+            _, test_nat_acc = attack.eval_clean(model, args, agg, test_loader, epoch)
             _, test_pgd20_acc = attack.eval_robust(model, args, agg, test_loader, epoch, loss_fn="cent", category="Madry", random=True)
 
 
