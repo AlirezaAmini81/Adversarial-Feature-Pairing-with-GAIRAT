@@ -13,6 +13,8 @@ from tempfile import mkdtemp
 from collections import defaultdict
 from tqdm import trange, tqdm
 import json
+from utils import loading_utils
+
 
 
 
@@ -50,10 +52,10 @@ parser.add_argument('--resume',type=str,default=None,help='whether to resume tra
 
 parser.add_argument('--experiment',type=str, required=True,help='dir of output')
 
-parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverge', 'piecewise', 'linear', 'onedrop', 'multipledecay', 'cosine'])
-parser.add_argument('--lr-max', default=0.1, type=float)
-parser.add_argument('--lr-one-drop', default=0.01, type=float)
-parser.add_argument('--lr-drop-epoch', default=100, type=int)
+# parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverge', 'piecewise', 'linear', 'onedrop', 'multipledecay', 'cosine'])
+# parser.add_argument('--lr-max', default=0.1, type=float)
+# parser.add_argument('--lr-one-drop', default=0.01, type=float)
+# parser.add_argument('--lr-drop-epoch', default=100, type=int)
 
 parser.add_argument('--objective',  choices=['AT', 'GAIRAT', 'AFP', 'GAIRAT_AFP'], required=True)
 
@@ -65,7 +67,41 @@ parser.add_argument('--weight_assignment_function', default='Tanh', choices=['Di
 parser.add_argument('--begin_epoch', type=int, default=60, help='when to use GAIR')
 
 parser.add_argument('--alpha', type=float, default=0.01, help='The coefficient of the feature pairwise loss')
-parser.add_argument("--warmup", type=int, default=0, help="number of epochs for warming up the model with CE, for joint supervision objectives, default: (0, no warming up) ",)
+parser.add_argument("--warmup", type=int, default=0, help="number of epochs for warming up the model with CE, for joint supervision objectives, default: (0, no warming up) ")
+
+parser.add_argument("--lr", type=float, default=0.001, help="learning rate, default: (0.001)")
+
+parser.add_argument(
+    "--scheduler",
+    type=str,
+    default="none",
+    metavar="M",
+    choices=["StepLR", "MultiStepLR"],
+    help="optimizer (default: none)",
+)
+parser.add_argument(
+    "--lr_gamma",
+    type=float,
+    default=1.0,
+    help="SCHEDULING, Multiplicative factor of learning rate decay , default: (1.0, no scheduling) ",
+)
+parser.add_argument(
+    "--lr_steps",
+    metavar="N",
+    type=int,
+    nargs="+",
+    default=[],
+    help="List of epoch indices. Must be increasing/Period of learning rate decay",
+)
+
+parser.add_argument(
+    "--optim",
+    type=str,
+    default="adam",
+    metavar="M",
+    choices=["sgd", "adam"],
+    help="optimizer (default: adam) - the sgd option is with momentum of 0.9",
+)
 
 args = parser.parse_args()
 
@@ -91,8 +127,8 @@ def train(epoch, agg, model, train_loader, optimizer, Lambda):
         x_adv, Kappa = attack.GA_PGD(model, data, target, args.epsilon, args.step_size, args.num_steps, loss_fn="cent",category="Madry", rand_init=True)
 
         model.train()
-        lr = lr_schedule(epoch + 1)
-        optimizer.param_groups[0].update(lr=lr)
+        # lr = lr_schedule(epoch + 1)
+        # optimizer.param_groups[0].update(lr=lr)
         optimizer.zero_grad()
         
         loss = calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda, Kappa)
@@ -267,9 +303,9 @@ if __name__ == '__main__':
     if args.net == "smallcnn":
         model = SmallCNN().cuda()
         net = "smallcnn"
-    if args.net == "resnet18":
-        model = ResNet18().cuda()
-        net = "resnet18"
+    if args.net == "ResNet18_Mart":
+        model = ResNet18_Mart().cuda()
+        net = "ResNet18_Mart"
     if args.net == "preactresnet18":
         model = PreActResNet18().cuda()
         net = "preactresnet18"
@@ -278,48 +314,31 @@ if __name__ == '__main__':
         net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
     if args.net == "Madry":
         model = Madry().cuda()
-        net = "Maddry"
+        net = "Madry"
 
     model = torch.nn.DataParallel(model)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
+    if args.optim == "adam":
+        optimizer = optim.Adam(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=args.lr,
+            amsgrad=args.amsgrad,
+            weight_decay=args.weight_decay,
+        )
+    elif args.optim == "sgd":
+        optimizer = optim.SGD(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=args.lr,
+        momentum=0.9,
+        weight_decay=args.weight_decay,
+        # , nesterov=True
+    )
+    print("model optimizer: ", optimizer.state_dict())
+    # optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
 
     # Learning schedules
-    if args.lr_schedule == 'superconverge':
-        lr_schedule = lambda t: np.interp([t], [0, args.epochs * 2 // 5, args.epochs], [0, args.lr_max, 0])[0]
-    elif args.lr_schedule == 'piecewise':
-        def lr_schedule(t):
-            if args.epochs >= 110:
-                # Train Wide-ResNet
-                if t / args.epochs < 0.5:
-                    return args.lr_max
-                elif t / args.epochs < 0.75:
-                    return args.lr_max / 10.
-                elif t / args.epochs < (11/12):
-                    return args.lr_max / 100.
-                else:
-                    return args.lr_max / 200.
-            else:
-                # Train ResNet
-                if t / args.epochs < 0.3:
-                    return args.lr_max
-                elif t / args.epochs < 0.6:
-                    return args.lr_max / 10.
-                else:
-                    return args.lr_max / 100.
-    elif args.lr_schedule == 'linear':
-        lr_schedule = lambda t: np.interp([t], [0, args.epochs // 3, args.epochs * 2 // 3, args.epochs], [args.lr_max, args.lr_max, args.lr_max / 10, args.lr_max / 100])[0]
-    elif args.lr_schedule == 'onedrop':
-        def lr_schedule(t):
-            if t < args.lr_drop_epoch:
-                return args.lr_max
-            else:
-                return args.lr_one_drop
-    elif args.lr_schedule == 'multipledecay':
-        def lr_schedule(t):
-            return args.lr_max - (t//(args.epochs//10))*(args.lr_max/10)
-    elif args.lr_schedule == 'cosine': 
-        def lr_schedule(t): 
-            return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
+    opt_dict = {"optimizer": optimizer}
+    schedulers = loading_utils.get_schedulers(args, opt_dict)
+
 
     # # Store path
     # if not os.path.exists(runPath):
@@ -408,6 +427,8 @@ if __name__ == '__main__':
             _, test_nat_acc = attack.eval_clean(model, args, agg, test_loader, epoch)
             _, test_pgd20_acc = attack.eval_robust(model, args, agg, test_loader, epoch, loss_fn="cent", category="Madry", random=True)
 
+            for scheduler in schedulers:
+                scheduler.step()
 
             print(
                 'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
@@ -424,6 +445,9 @@ if __name__ == '__main__':
                 save_model(model, models_dir + f"/model_best_adv_acc.rar")
             save_model(model, models_dir + f"/model_last.rar")
             save_model(optimizer, models_dir + f"/optim_last.rar")
+
+            for _indx, _scheduler in enumerate(schedulers):
+                save_model(_scheduler, models_dir + f"/scheduler{_indx}_last.rar")
 
             # logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
 
