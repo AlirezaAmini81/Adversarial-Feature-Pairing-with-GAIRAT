@@ -180,6 +180,7 @@ def calculate_loss(args, model, agg, epoch, data, target, x_adv, Lambda=None, Ka
         agg[f"{phase}_ce_loss"][epoch] += ce_loss.item()
         return ce_loss
     elif args.objective == 'GAIRAT':
+        # Based on "https://github.com/zjfheart/Geometry-aware-Instance-reweighted-Adversarial-Training"
         if (epoch + 1) >= args.begin_epoch:
             Kappa = Kappa.cuda()
             loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
