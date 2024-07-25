@@ -4,6 +4,50 @@ This repository provides codes for **Geometry-aware Instance-reweighted Adversar
 (https://openreview.net/forum?id=iAX0l6Cz8ub) (ICLR oral)<br/>
 *Jingfeng Zhang, Jianing Zhu, Gang Niu, Bo Han, Masashi Sugiyama and Mohan Kankanhalli*
 
+# AFP_GAIRAT: Adversarial Feature Pairing with Geometry-Aware Instance-Reweighted Adversarial Training
+
+This repository contains the implementation and evaluation of AFP_GAIRAT, a novel method that integrates Adversarial Feature Pairing (AFP) with Geometry-Aware Instance-Reweighted Adversarial Training (GAIRAT) to enhance the adversarial robustness of neural networks.
+
+## Overview
+
+AFP_GAIRAT combines the strengths of GAIRAT and a unique approach called Adversarial Feature Pairing (AFP) to create a more robust defense against adversarial attacks. While GAIRAT focuses on assigning instance-specific weights based on their geometric properties, AFP ensures that the features of natural and adversarial examples remain close. Together, these methods form AFP_GAIRAT, which achieves superior adversarial robustness.
+
+## Contents
+
+- Report.pdf: Detailed explanation of the AFP_GAIRAT method, experimental setup, and results.
+- Code: Python implementation of the AFP_GAIRAT method.
+- Experiments: Scripts and configurations used for running the experiments on the MNIST and CIFAR-10 datasets.
+- Results: Output and analysis of the experiments, including accuracy and adversarial robustness metrics.
+
+## Method: AFP_GAIRAT
+
+### Adversarial Feature Pairing (AFP)
+
+AFP aims to minimize the feature space distance between natural and adversarial examples. This method adds a term to the loss function to ensure that the features of natural and adversarial examples are paired closely together, enhancing the model's robustness to adversarial attacks.
+
+### Geometry-Aware Instance-Reweighted Adversarial Training (GAIRAT)
+
+GAIRAT assigns weights to training instances based on their distance from the decision boundary. Instances closer to the boundary receive higher weights, making the model focus more on these critical examples during training.
+
+### Key Components
+
+- Instance Reweighting: Instances are weighted according to their distance from the decision boundary, as in GAIRAT.
+- Feature Pairing: The features for natural and adversarial examples are paired to minimize their difference, enhancing robustness.
+
+## Results
+
+### MNIST
+
+- AFP_GAIRAT: Demonstrates significant improvements in adversarial robustness while maintaining competitive natural accuracy.
+
+### CIFAR-10
+
+- AFP_GAIRAT: Shows substantial enhancement in robustness against adversarial attacks, outperforming other methods in robustness metrics.
+
+## How to Use
+
+
+
 ## What is the nature of adversarial training?
 Adversarial training employs adversarial data for updating the models. 
 For more details of the nature of adversarial training, refer to this [FAT's GitHub](https://github.com/zjfheart/Friendly-Adversarial-Training) for the preliminary. <br/> 
