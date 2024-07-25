@@ -1,12 +1,6 @@
-#  Adversarial Feature Pairing  GAIRAT (Geometry-aware Instance-reweighted Adversarial Training)
-
-This repository provides codes for **Geometry-aware Instance-reweighted Adversarial Training** 
-(https://openreview.net/forum?id=iAX0l6Cz8ub) (ICLR oral)<br/>
-*Jingfeng Zhang, Jianing Zhu, Gang Niu, Bo Han, Masashi Sugiyama and Mohan Kankanhalli*
-
 # AFP_GAIRAT: Adversarial Feature Pairing with Geometry-Aware Instance-Reweighted Adversarial Training
 
-This repository contains the implementation and evaluation of AFP_GAIRAT, a novel method that integrates Adversarial Feature Pairing (AFP) with Geometry-Aware Instance-Reweighted Adversarial Training (GAIRAT) to enhance the adversarial robustness of neural networks.
+This repository contains the implementation and evaluation of AFP_GAIRAT, a novel method that integrates Adversarial Feature Pairing (AFP) with Geometry-Aware Instance-Reweighted Adversarial Training (GAIRAT) (https://openreview.net/forum?id=iAX0l6Cz8ub) (ICLR oral)<br/> to enhance the adversarial robustness of neural networks.
 
 ## Overview
 
