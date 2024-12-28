@@ -46,6 +46,16 @@ The illustration of GAIRAT. GAIRAT explicitly gives larger weights on the losses
 
 - AFP_GAIRAT: Demonstrates significant improvements in adversarial robustness while maintaining competitive natural accuracy.
 
+| Defense      | Best checkpoint |             | Last checkpoint |             |
+|--------------|-----------------|-------------|-----------------|-------------|
+|              | Natural         | PGD-40      | Natural         | PGD-40      |
+| AT           | 98.06           | 92.68       | 98.06           | 92.36       |
+| GAIRAT       | 98.13           | 92.4        | 97.98           | 92.26       |
+| AFP          | 98.33           | **93.42**   | 98.33           | **93.32**   |
+| GAIRAT_AFP   | **98.37**       | 93.16       | **98.32**       | 92.62       |
+
+*جدول ۱ – مقایسه دقت طبیعی و متخاصم چهار روش بر روی دیتاست*
+
 ### CIFAR-10
 
 - AFP_GAIRAT: Shows substantial enhancement in robustness against adversarial attacks, outperforming other methods in robustness metrics.
